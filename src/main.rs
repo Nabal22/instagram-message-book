@@ -1,111 +1,90 @@
-use std::{path::{PathBuf, Path}, fs::{File, create_dir_all, copy}, io::{Read, Write}, rc::Rc};
-
-use clap::Parser;
-use imessage_database::{tables::{table::{get_connection, Table, DEFAULT_PATH_IOS, MESSAGE_ATTACHMENT_JOIN, MESSAGE, RECENTLY_DELETED, CHAT_MESSAGE_JOIN, DEFAULT_PATH_MACOS}, messages::Message, chat::Chat}, error::table::TableError, util::dates::get_offset};
-use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use chrono::{DateTime, Local, NaiveDateTime, Utc};
+use std::{path::{PathBuf, Path}, fs::{File, copy}, io::{Read, BufReader,  Write}};
 use render::render_message;
-use rusqlite::types::Value;
 
 mod render;
 
 const TEMPLATE_DIR: &str = "templates";
 
-// default ios sms.db path is <backup-path>/3d/3d0d7e5fb2ce288813306e4d4636395e047a3d2
-
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Phone number of the conversation to export, of the form '+15555555555'
-    recipient: String,
-    /// Where to find the iMessage database. If not provided, assumes it is in the default Mac location
-    #[clap(flatten)]
-    database_location: BackupPath,
-    /// The directory to create the .tex files in
-    #[arg(short, long, default_value = "output")]
-    output_dir: PathBuf,
+#[derive(Debug, Deserialize, Serialize)]
+struct Conversation {
+    participants: Vec<Participant>,
+    messages: Vec<MessageInsta>,
 }
 
-impl Args {
-    fn get_db_location(&self) -> PathBuf {
-        match &self.database_location {
-            BackupPath { ios_backup_dir: Some(ios_dir), chat_database: None } => {
-                let mut path = ios_dir.clone();
-                path.push(DEFAULT_PATH_IOS);
-                path
-            },
-            BackupPath { ios_backup_dir: None, chat_database: Some(db_path) } => db_path.to_owned(),
-            BackupPath { ios_backup_dir: None, chat_database: None } => DEFAULT_PATH_MACOS.into(),
-            _ => panic!("too many arguments for database location")
-        }
+#[derive(Debug, Deserialize, Serialize)]
+struct MessageInsta {
+    sender_name: String,
+    timestamp_ms: u64,
+    content: Option<String>,
+    audio_files: Option<Vec<AudioFile>>,
+    share: Option<Share>,
+}
+
+struct MessageConverted {
+    rowid: i64,
+    guid: String,
+    text: Option<String>,
+    service: Option<String>,
+    handle_id: Option<i64>,
+    date: DateTime<Utc>,
+    timestamp_ms : i64,
+    date_read: i64,
+    date_delivered: i64,
+    is_from_me: bool,
+    is_read: bool,
+    item_type: i32,
+    group_title: Option<String>,
+    group_action_type: i32,
+    associated_message_guid: Option<String>,
+    associated_message_type: Option<i32>,
+    balloon_bundle_id: Option<String>,
+    expressive_send_style_id: Option<String>,
+    thread_originator_guid: Option<String>,
+    thread_originator_part: Option<String>,
+    date_edited: i64,
+    chat_id: Option<i64>,
+    num_attachments: i32,
+    deleted_from: Option<String>,
+    num_replies: i32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Participant {
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AudioFile {
+    uri: String,
+    creation_timestamp: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Share {
+    link: String,
+    #[serde(rename = "share_text")]
+    share_text: Option<String>,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let output_dir = Path::new("output");
+    if !output_dir.exists() {
+        fs::create_dir(output_dir).expect("Impossible de créer le dossier output");
     }
-}
 
-#[derive(Debug, clap::Args)]
-#[group(required = false, multiple = false)]
-struct BackupPath {
-    /// Path to the root of an iOS backup folder
-    #[arg(short, long)]
-    ios_backup_dir: Option<PathBuf>,
-    /// Path to the chat database directly. If neither `ios_backup_dir` or `chat_database` is provided, the location will be assumed to be the default MacOS location.
-    #[arg(short, long)]
-    chat_database: Option<PathBuf>,
-}
+    // Ouvrir et lire le fichier JSON
+    let file = File::open("conv.json").expect("Impossible d'ouvrir le fichier");
+    let reader = BufReader::new(file);
+    let conversation: Conversation = serde_json::from_reader(reader).expect("Impossible de parser le JSON");
 
+    let filtered_msgs = convert_json_to_messages(&serde_json::to_string(&conversation).unwrap());
 
-fn iter_messages(db_path: &PathBuf, chat_identifier: &str, output_dir: &PathBuf) -> Result<(), TableError> {
-    let db = get_connection(db_path).unwrap();
-
-    let mut chat_stmt = Chat::get(&db)?;
-    let chats: Vec<Chat> = chat_stmt
-        .query_map([], |row| Chat::from_row(row))
-        .unwrap()
-        .filter_map(|c| c.ok())
-        .filter(|c| c.chat_identifier == chat_identifier)
-        .collect(); // we collect these into a vec since there should only be a couple, we don't need to stream them
-    
-    let chat_ids: Vec<i32> = chats.iter().map(|c| c.rowid).collect();
-
-    // let mut msg_stmt = Message::get(&db)?;
-    // using rarray as in the example at https://docs.rs/rusqlite/0.29.0/rusqlite/vtab/array/index.html to check if chat is ok
-    // SQL almost entirely taken from imessage-database Message::get, with added filtering
-    rusqlite::vtab::array::load_module(&db).expect("failed to load module");
-    let mut msg_stmt = db.prepare(&format!(
-        "SELECT
-                 *,
-                 c.chat_id,
-                 (SELECT COUNT(*) FROM {MESSAGE_ATTACHMENT_JOIN} a WHERE m.ROWID = a.message_id) as num_attachments,
-                 (SELECT b.chat_id FROM {RECENTLY_DELETED} b WHERE m.ROWID = b.message_id) as deleted_from,
-                 (SELECT COUNT(*) FROM {MESSAGE} m2 WHERE m2.thread_originator_guid = m.guid) as num_replies
-             FROM
-                 message as m
-                 LEFT JOIN {CHAT_MESSAGE_JOIN} as c ON m.ROWID = c.message_id
-             WHERE
-                 c.chat_id IN rarray(?1)
-             ORDER BY
-                 m.date
-             LIMIT
-                 100000;
-            "
-        )).expect("unable to build messages query");
-
-    // unfortunately I don't think there is an easy way to add a WHERE clause
-    // to the statement generated by Message::get.
-    // So instead I generated my own SQL statement, based on Message::get
-    // and I need to pass in the valid chat ids
-    let chat_id_values = Rc::new(chat_ids.iter().copied().map(Value::from).collect::<Vec<Value>>());
-    let msgs = msg_stmt
-        .query_map([chat_id_values], |row| Message::from_row(row))
-        .unwrap()
-        .filter_map(|m| m.ok());
-        // .filter(|m| m.chat_id.is_some_and(|id| chat_ids.contains(&id))); // not needed with new sql filtering
-
-    chats.iter().for_each(|c| println!("Found chat {:?}", c));
-
-    // need to create output dir first, so we can create files inside it
-    create_dir_all(output_dir).expect("Could not create output directory");
-
-    let filtered_msgs = msgs
-        .filter(|m| !m.is_reaction() && !m.is_announcement() && !m.is_shareplay());
+    // sort the messages by date
+    let mut filtered_msgs = filtered_msgs;
+    filtered_msgs.sort_by(|a, b| a.date.cmp(&b.date));
 
     let mut chapters: Vec<String> = vec![]; // the names of the chapters created, like 2020-11
     let mut current_output_info: Option<(String, File)> = None; // chapter_name, File
@@ -114,7 +93,16 @@ fn iter_messages(db_path: &PathBuf, chat_identifier: &str, output_dir: &PathBuf)
         // this is a mess. Basically we are updating current_output_file to be correct for the current message.
         // Since the messages are in chronological order, marching through messages and updating this, creating
         // files as necessary, should work
-        let msg_date = msg.date(&get_offset()).expect("could not find date for message");
+        //let msg_date = Utc.timestamp_millis_opt(msg.timestamp_ms as i64).unwrap();
+
+        let timestampNoConvert = msg.timestamp_ms as i64;
+        let timestamp = timestampNoConvert / 1000;
+
+        let naive = NaiveDateTime::from_timestamp(timestamp, 0);
+    
+        // Create a normal DateTime from the NaiveDateTime
+        let msg_date: DateTime<Utc> = DateTime::from_utc(naive, Utc);
+
         let chapter_name = msg_date
             .format("ch-%Y-%m")
             .to_string();
@@ -134,18 +122,18 @@ fn iter_messages(db_path: &PathBuf, chat_identifier: &str, output_dir: &PathBuf)
             chapters.push(chapter_name);
         }
 
-        match msg.gen_text(&db) {
-            Ok(_) => {
+        // match msg.gen_text(&db) {
+        //     Ok(_) => {
                 // Successfully generated message, proceed with rendering and writing to output file
                 let rendered = render_message(&msg);
                 let mut output_file = &current_output_info.as_ref().expect("Current output info was none while processing message").1;
                 output_file.write(rendered.as_bytes()).expect("Unable to write message to output file");
-            }
-            Err(err) => {
-                // Handle the error gracefully, you can log it or ignore it depending on your requirements
-                eprintln!("Failed to generate message: {:?}", err);
-            }
-        }
+        //     }
+        //     Err(err) => {
+        //         // Handle the error gracefully, you can log it or ignore it depending on your requirements
+        //         eprintln!("Failed to generate message: {:?}", err);
+        //     }
+        // }
     }
 
     // Once we create all the chapter files, we need to create the main.tex file to include them 
@@ -174,12 +162,59 @@ fn iter_messages(db_path: &PathBuf, chat_identifier: &str, output_dir: &PathBuf)
     Ok(())
 }
 
-fn main() {
-    let args = Args::parse();
-    let db_path = args.get_db_location();
-    iter_messages(&db_path, &args.recipient, &args.output_dir).expect("failed :(");
 
+fn convert_json_to_messages(json_data: &str) -> Vec<MessageConverted> {
+    let json_obj: serde_json::Value = serde_json::from_str(json_data).unwrap();
 
+    let messages = json_obj["messages"].as_array().unwrap_or_else(|| {
+        panic!("Expected 'messages' array in JSON data.");
+    });
 
-    println!("Hello!")
+    let mut result = Vec::new();
+
+    for message in messages {
+        let sender_name = message["sender_name"].as_str().unwrap_or("");
+        let timestamp_ms = message["timestamp_ms"].as_i64().unwrap_or(0);
+        let content = message["content"].as_str();
+
+        let timestamp = timestamp_ms / 1000;
+
+        let naive = NaiveDateTime::from_timestamp(timestamp, 0);
+    
+        // Create a normal DateTime from the NaiveDateTime
+        let msg_date: DateTime<Utc> = DateTime::from_utc(naive, Utc);
+
+        // Build a Message struct based on the JSON data
+        let new_message = MessageConverted {
+            rowid: 0, // Set appropriate value
+            guid: "".to_string(), // Set appropriate value
+            text: content.map(|c| c.to_string()),
+            service: Some("iMessage".to_string()), // Assuming all messages are from iMessage
+            handle_id: Some(380), // Set appropriate value
+            date: msg_date,
+            timestamp_ms: timestamp_ms, // Set appropriate value
+            date_read: 0, // Set appropriate value
+            date_delivered: 0, // Set appropriate value
+            is_from_me: sender_name == "NABAL", // Set based on sender_name
+            is_read: true, // Assuming all messages are read
+            item_type: 0, // Set appropriate value
+            group_title: None,
+            group_action_type: 0, // Set appropriate value
+            associated_message_guid: None,
+            associated_message_type: Some(0), // Set appropriate value
+            balloon_bundle_id: None,
+            expressive_send_style_id: None,
+            thread_originator_guid: None,
+            thread_originator_part: None,
+            date_edited: 0, // Set appropriate value
+            chat_id: Some(420), // Set appropriate value
+            num_attachments: 0, // Set appropriate value
+            deleted_from: None,
+            num_replies: 0, // Set appropriate value
+        };
+
+        result.push(new_message);
+    }
+
+    result
 }

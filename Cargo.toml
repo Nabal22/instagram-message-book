@@ -1,14 +1,13 @@
 [package]
-name = "message-book"
+name = "insta-msg-book"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.79"
-chrono = "0.4.32"
-clap = { version = "4.4.18", features = ["derive", "string"] }
-imessage-database = "1.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10.3"
-rusqlite = { version = "0.30.0", features = ["array"] }
+imessage-database = "1.8.0"

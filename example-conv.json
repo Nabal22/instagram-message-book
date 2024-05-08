@@ -1,0 +1,72 @@
+{
+  "participants": [
+    {
+      "name": "Ellie"
+    },
+    {
+      "name": "NABAL"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "NABAL",
+      "timestamp_ms": 1685823139340,
+      "content": "Salut Ellie! Comment ça va aujourd'hui?",
+      "is_geoblocked_for_viewer": false
+    },
+    {
+      "sender_name": "Ellie",
+      "timestamp_ms": 1685822920263,
+      "content": "Salut Nabal! Ça va bien merci, et toi?",
+      "is_geoblocked_for_viewer": false
+    },
+    {
+    "sender_name": "NABAL",
+    "timestamp_ms": 1685822554128,
+    "content": "Ça va aussi, j'ai juste beaucoup de travail en ce moment.",
+    "is_geoblocked_for_viewer": false
+    },
+    {
+    "sender_name": "Ellie",
+    "timestamp_ms": 1685822554128,
+    "content": "Ah mince, courage! Tu as besoin d'aide?",
+    "is_geoblocked_for_viewer": false
+    },
+    {
+    "sender_name": "NABAL",
+    "timestamp_ms": 1685822554128,
+    "content": "Merci! C'est gentil, mais ça devrait aller.",
+    "is_geoblocked_for_viewer": false
+    },
+    {
+    "sender_name": "Ellie",
+    "timestamp_ms": 1693142554128,
+    "content": "Salut NABAL! Comment ça va? On ne s'est pas parlé depuis un moment.",
+    "is_geoblocked_for_viewer": false
+    },
+    {
+    "sender_name": "NABAL",
+    "timestamp_ms": 1693152554128,
+    "content": "Salut Ellie! Oui, ça fait un moment! Ça va bien merci, et toi?",
+    "is_geoblocked_for_viewer": false
+    },
+    {
+    "sender_name": "Ellie",
+    "timestamp_ms": 1693162554128,
+    "content": "Ça va, merci! Tu as réussi à gérer ton travail?",
+    "is_geoblocked_for_viewer": false
+    },
+    {
+    "sender_name": "NABAL",
+    "timestamp_ms": 1693168554128,
+    "content": "Oui, ça va mieux maintenant. Merci de demander!",
+    "is_geoblocked_for_viewer": false
+    }
+  ],
+  "title": "Ellie",
+  "is_still_participant": true,
+  "thread_path": "inbox/ellie_3094184377494792",
+  "magic_words": [
+    
+  ]
+}
